@@ -1,0 +1,2 @@
+version_id,model_name,trained_at,artifact_path,legacy_model_path,dataset_path,target_column,accuracy,auc_roc,f1,precision,recall
+tuned_xgboost_20260531_204055,tuned_xgboost,2026-05-31T20:40:55,models\tuned_xgboost\tuned_xgboost_20260531_204055.joblib,tuned_xgboost_model.joblib,dataset_features.parquet,target_label,0.8401337875197472,0.8750865660602354,0.031985651296614605,0.016329645173597862,0.7753623188405797

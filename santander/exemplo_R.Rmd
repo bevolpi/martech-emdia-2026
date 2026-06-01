@@ -1,0 +1,462 @@
+---
+title: "Projeto_SAN — Sprint 1 · Task 2: EDA"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    theme: lumen
+runtime: shiny
+---
+
+```{r ler_dados, include=FALSE}
+library(flexdashboard)
+library(arrow)
+library(shiny)
+library(tidyverse)
+library(DT)
+library(RColorBrewer)
+library(scales)
+library(plotly)
+library(moments)
+
+dados <- read_parquet("C:/Users/kayla.abreu/Downloads/santander/dataset_consolidado.parquet")
+
+# ── Enriquecimento base ────────────────────────────────────────────────────────
+dados <- dados |>
+  mutate(
+    ndigitos_tel  = nchar(as.character(telefone)),
+    tipo_tel      = case_when(
+      ndigitos_tel == 11 ~ "Celular (11 dig)",
+      ndigitos_tel == 10 ~ "Fixo (10 dig)",
+      TRUE               ~ "Outro"
+    ),
+    ddd           = substr(as.character(telefone), 1, 2),
+    taxa_cpc_total = if_else(qnt_acionamentos_total > 0,
+                             qnt_cpc_total / qnt_acionamentos_total,
+                             NA_real_),
+    taxa_cpc_30d   = if_else(qnt_acionamentos_30d > 0,
+                             qnt_cpc_30d / qnt_acionamentos_30d,
+                             NA_real_),
+    label_cpc = factor(cpc_futuro, levels = c(0,1),
+                       labels = c("Não CPC", "CPC"))
+  )
+
+# Paleta padrão
+cores <- c("#4472C4", "#ED7D31", "#70AD47", "#FFC000", "#A9D18E")
+```
+
+# 📋 Visão Geral
+
+## Column {data-width=220}
+
+### Total de Registros
+```{r}
+renderValueBox({
+  valueBox(
+    value    = format(nrow(dados), big.mark = "."),
+    icon     = "fa-database",
+    color    = "primary"
+  )
+})
+```
+
+### Total de Colunas
+```{r}
+renderValueBox({
+  valueBox(
+    value = ncol(dados),
+    icon  = "fa-table",
+    color = "info"
+  )
+})
+```
+
+### % Celulares
+```{r}
+renderValueBox({
+  pct <- mean(dados$tipo_tel == "Celular (11 dig)", na.rm = TRUE)
+  valueBox(
+    value = percent(pct, accuracy = 0.1),
+    icon  = "fa-mobile",
+    color = "success"
+  )
+})
+```
+
+### Taxa CPC Futuro
+```{r}
+renderValueBox({
+  pct <- mean(dados$cpc_futuro, na.rm = TRUE)
+  valueBox(
+    value = percent(pct, accuracy = 0.1),
+    icon  = "fa-phone",
+    color = ifelse(pct < 0.3, "warning", "success")
+  )
+})
+```
+
+### Telefones Duplicados
+```{r}
+renderValueBox({
+  n_dup <- dados |> count(telefone) |> filter(n > 1) |> nrow()
+  valueBox(
+    value = format(n_dup, big.mark = "."),
+    icon  = "fa-copy",
+    color = ifelse(n_dup > 0, "danger", "success")
+  )
+})
+```
+
+## Column {data-width=440}
+
+### Distribuição de Idade
+```{r}
+renderPlotly({
+  p <- dados |>
+    filter(!is.na(idade)) |>
+    ggplot(aes(x = idade)) +
+    geom_histogram(bins = 40, fill = cores[1], color = "white", alpha = 0.85) +
+    geom_vline(xintercept = median(dados$idade, na.rm = TRUE),
+               color = "red", linetype = "dashed", linewidth = 1) +
+    labs(title = paste0("Mediana = ", round(median(dados$idade, na.rm=TRUE),1), " anos"),
+         x = "Idade", y = "Frequência") +
+    theme_minimal()
+  ggplotly(p, tooltip = c("x","y"))
+})
+```
+
+## Column {data-width=340}
+
+### Balanceamento do Target (cpc_futuro)
+```{r}
+renderPlotly({
+  df_t <- dados |>
+    count(label_cpc) |>
+    mutate(pct = n / sum(n))
+
+  plot_ly(df_t, x = ~label_cpc, y = ~pct, type = "bar",
+          color = ~label_cpc,
+          colors = c("#ED7D31","#70AD47"),
+          text  = ~percent(pct, accuracy = 0.1),
+          textposition = "outside") |>
+    layout(yaxis  = list(tickformat = ".0%", title = "Proporção"),
+           xaxis  = list(title = ""),
+           title  = "Target: cpc_futuro",
+           showlegend = FALSE)
+})
+```
+
+### Tipo de Telefone
+```{r}
+renderPlotly({
+  df_tel <- dados |> count(tipo_tel) |> mutate(pct = n / sum(n))
+
+  plot_ly(df_tel, labels = ~tipo_tel, values = ~n, type = "pie",
+          textinfo = "label+percent",
+          marker = list(colors = cores)) |>
+    layout(title = "Tipo de Telefone")
+})
+```
+
+# 📞 Telefones
+
+## Column {data-width=400}
+
+### Distribuição por DDD (top 20)
+```{r}
+renderPlotly({
+  df_ddd <- dados |>
+    count(ddd, sort = TRUE) |>
+    head(20) |>
+    mutate(ddd = reorder(ddd, n))
+
+  p <- ggplot(df_ddd, aes(x = n, y = ddd,
+              text = paste0("DDD: ", ddd, "<br>Registros: ", format(n, big.mark=".")))) +
+    geom_col(fill = cores[1], alpha = 0.85) +
+    labs(title = "Top 20 DDDs", x = "Registros", y = "DDD") +
+    theme_minimal()
+
+  ggplotly(p, tooltip = "text")
+})
+```
+
+## Column {data-width=300}
+
+### Telefones Duplicados (mais frequentes)
+```{r}
+renderDT({
+  dados |>
+    count(telefone, name = "ocorrencias") |>
+    filter(ocorrencias > 1) |>
+    arrange(desc(ocorrencias)) |>
+    head(50) |>
+    datatable(
+      options = list(pageLength = 10, scrollY = "300px"),
+      rownames = FALSE,
+      caption  = "Números que aparecem em mais de 1 pessoa"
+    )
+})
+```
+
+## Column {data-width=300}
+
+### Distribuição por UF
+```{r}
+renderPlotly({
+  df_uf <- dados |>
+    count(uf, sort = TRUE) |>
+    head(15) |>
+    mutate(uf = reorder(uf, n))
+
+  p <- ggplot(df_uf, aes(x = n, y = uf,
+              text = paste0("UF: ", uf, "<br>Registros: ", format(n, big.mark=".")))) +
+    geom_col(fill = cores[3], alpha = 0.85) +
+    labs(title = "Top 15 Estados", x = "Registros", y = NULL) +
+    theme_minimal()
+
+  ggplotly(p, tooltip = "text")
+})
+```
+
+# 📊 Taxa de CPC
+
+## Column {.sidebar}
+
+**Filtros**
+
+```{r}
+selectInput("sexo_cpc", "Sexo:",
+            choices = c("Todos", sort(unique(dados$sexo))),
+            selected = "Todos")
+
+selectInput("tipo_pessoa_cpc", "Tipo Pessoa:",
+            choices = c("Todos", sort(unique(dados$tipo_pessoa))),
+            selected = "Todos")
+
+selectInput("carteira_cpc", "Carteira:",
+            choices = c("Todos", sort(unique(dados$desc_carteira))),
+            selected = "Todos")
+```
+
+```{r}
+dados_filtrado <- reactive({
+  df <- dados
+  if (input$sexo_cpc       != "Todos") df <- df |> filter(sexo        == input$sexo_cpc)
+  if (input$tipo_pessoa_cpc != "Todos") df <- df |> filter(tipo_pessoa == input$tipo_pessoa_cpc)
+  if (input$carteira_cpc   != "Todos") df <- df |> filter(desc_carteira == input$carteira_cpc)
+  df
+})
+```
+
+## Column {data-width=400}
+
+### Distribuição da Taxa de CPC (total)
+```{r}
+renderPlotly({
+  df <- dados_filtrado() |> filter(!is.na(taxa_cpc_total))
+
+  p <- ggplot(df, aes(x = taxa_cpc_total)) +
+    geom_histogram(bins = 30, fill = cores[3], color = "white", alpha = 0.85) +
+    scale_x_continuous(labels = percent) +
+    labs(title = "Taxa de CPC — histórico total",
+         x = "Taxa CPC", y = "Frequência") +
+    theme_minimal()
+
+  ggplotly(p, tooltip = c("x","y"))
+})
+```
+
+### Taxa CPC por Janela Temporal
+```{r}
+renderPlotly({
+  df <- dados_filtrado()
+
+  medias <- tibble(
+    janela = c("Total", "30d", "60d", "90d"),
+    media  = c(
+      mean(df$taxa_cpc_total, na.rm = TRUE),
+      mean(df$taxa_cpc_30d,   na.rm = TRUE),
+      mean(df$taxa_cpc_60d,   na.rm = TRUE),
+      mean(df$taxa_cpc_90d,   na.rm = TRUE)
+    )
+  )
+
+  plot_ly(medias, x = ~janela, y = ~media, type = "bar",
+          marker = list(color = cores[1]),
+          text   = ~percent(media, accuracy = 0.1),
+          textposition = "outside") |>
+    layout(yaxis = list(tickformat = ".1%", title = "Taxa CPC média"),
+           xaxis = list(title = "Janela"),
+           title = "Taxa CPC média por janela")
+})
+```
+
+## Column {data-width=400}
+
+### CPC por Sexo
+```{r}
+renderPlotly({
+  df <- dados_filtrado() |>
+    group_by(sexo) |>
+    summarise(
+      taxa_cpc_hist  = mean(taxa_cpc_total, na.rm = TRUE),
+      taxa_cpc_futuro = mean(cpc_futuro,     na.rm = TRUE),
+      n = n(), .groups = "drop"
+    ) |>
+    pivot_longer(starts_with("taxa"), names_to = "tipo", values_to = "valor")
+
+  plot_ly(df, x = ~sexo, y = ~valor, color = ~tipo, type = "bar",
+          colors = c(cores[1], cores[2]),
+          text   = ~percent(valor, accuracy = 0.1),
+          textposition = "outside") |>
+    layout(barmode = "group",
+           yaxis = list(tickformat = ".1%", title = "Taxa"),
+           xaxis = list(title = ""),
+           title = "Taxa CPC: histórico × futuro por Sexo")
+})
+```
+
+### CPC por Tipo de Pessoa
+```{r}
+renderPlotly({
+  df <- dados_filtrado() |>
+    group_by(tipo_pessoa) |>
+    summarise(
+      taxa_cpc_hist   = mean(taxa_cpc_total, na.rm = TRUE),
+      taxa_cpc_futuro = mean(cpc_futuro,     na.rm = TRUE),
+      n = n(), .groups = "drop"
+    ) |>
+    pivot_longer(starts_with("taxa"), names_to = "tipo", values_to = "valor")
+
+  plot_ly(df, x = ~tipo_pessoa, y = ~valor, color = ~tipo, type = "bar",
+          colors = c(cores[1], cores[2]),
+          text   = ~percent(valor, accuracy = 0.1),
+          textposition = "outside") |>
+    layout(barmode = "group",
+           yaxis = list(tickformat = ".1%", title = "Taxa"),
+           xaxis = list(title = ""),
+           title = "Taxa CPC: histórico × futuro por Tipo Pessoa")
+})
+```
+
+# 🔍 Outliers
+
+## Column {data-width=350}
+
+### Resumo de Outliers (método IQR)
+```{r}
+renderDT({
+  cols_out <- c("idade",
+                "qnt_acionamentos_total", "qnt_alo_total",
+                "qnt_cpc_total", "qnt_produtivo_total",
+                "qnt_promessa_total", "qnt_desconhece_total",
+                "qnt_caixa_postal_total", "qnt_queda_ligacao_total")
+
+  res <- lapply(cols_out, function(col) {
+    x   <- dados[[col]]
+    q1  <- quantile(x, 0.25, na.rm = TRUE)
+    q3  <- quantile(x, 0.75, na.rm = TRUE)
+    iqr <- q3 - q1
+    n_out <- sum(x < (q1 - 1.5*iqr) | x > (q3 + 1.5*iqr), na.rm = TRUE)
+    data.frame(
+      Variável      = col,
+      Q1            = round(q1, 1),
+      Q3            = round(q3, 1),
+      Limite_Inf    = round(q1 - 1.5*iqr, 1),
+      Limite_Sup    = round(q3 + 1.5*iqr, 1),
+      N_Outliers    = n_out,
+      Pct_Outliers  = paste0(round(n_out / sum(!is.na(x)) * 100, 2), "%")
+    )
+  }) |> bind_rows()
+
+  datatable(res,
+            options  = list(pageLength = 10, scrollX = TRUE),
+            rownames = FALSE)
+})
+```
+
+## Column {data-width=350}
+
+### Boxplot — Selecione a Variável
+```{r}
+selectInput("var_box", "Variável:",
+            choices = c("idade",
+                        "qnt_acionamentos_total", "qnt_alo_total",
+                        "qnt_cpc_total", "qnt_produtivo_total",
+                        "qnt_promessa_total", "qnt_desconhece_total",
+                        "qnt_caixa_postal_total", "qnt_queda_ligacao_total"))
+```
+
+```{r}
+renderPlotly({
+  var <- input$var_box
+  df  <- dados |>
+    select(label_cpc, valor = all_of(var)) |>
+    filter(!is.na(valor))
+
+  p99 <- quantile(df$valor, 0.99, na.rm = TRUE)
+
+  p <- ggplot(df, aes(x = label_cpc, y = valor, fill = label_cpc)) +
+    geom_boxplot(outlier.colour = "red", outlier.alpha = 0.4,
+                 show.legend = FALSE) +
+    scale_fill_manual(values = c("#ED7D31","#70AD47")) +
+    coord_cartesian(ylim = c(0, p99)) +
+    labs(title = paste0(var, " × CPC futuro (truncado no p99)"),
+         x = NULL, y = var) +
+    theme_minimal()
+
+  ggplotly(p)
+})
+```
+
+## Column {data-width=300}
+
+### Registros com Idade Suspeita (< 18 ou > 100)
+```{r}
+renderDT({
+  dados |>
+    filter(idade < 18 | idade > 100) |>
+    select(id_pessoa, telefone, idade, sexo, tipo_pessoa, uf, desc_carteira) |>
+    datatable(options  = list(pageLength = 10, scrollX = TRUE, scrollY = "350px"),
+              rownames = FALSE,
+              caption  = "Possíveis erros de cadastro")
+})
+```
+
+# 📈 Estatísticas
+
+## Column
+
+### Estatísticas Descritivas Completas
+```{r}
+renderDT({
+  num_cols <- dados |> select(where(is.numeric)) |> names()
+
+  stats <- lapply(num_cols, function(col) {
+    x <- dados[[col]]
+    data.frame(
+      Variável   = col,
+      N          = sum(!is.na(x)),
+      Média      = round(mean(x,   na.rm = TRUE), 3),
+      Mediana    = round(median(x, na.rm = TRUE), 3),
+      DP         = round(sd(x,     na.rm = TRUE), 3),
+      Mínimo     = round(min(x,    na.rm = TRUE), 3),
+      Máximo     = round(max(x,    na.rm = TRUE), 3),
+      Q1         = round(quantile(x, 0.25, na.rm = TRUE), 3),
+      Q3         = round(quantile(x, 0.75, na.rm = TRUE), 3),
+      Assimetria = round(skewness(x, na.rm = TRUE), 3),
+      Curtose    = round(kurtosis(x, na.rm = TRUE), 3),
+      N_Missing  = sum(is.na(x))
+    )
+  }) |> bind_rows()
+
+  datatable(stats,
+            filter   = "top",
+            options  = list(pageLength = 15, scrollX = TRUE),
+            rownames = FALSE) |>
+    formatStyle("Assimetria",
+                backgroundColor = styleInterval(c(-1, 1), c("#fde8e8","white","#fde8e8"))) |>
+    formatStyle("N_Missing",
+                backgroundColor = styleInterval(0, c("white","#fff3cd")))
+})
+```

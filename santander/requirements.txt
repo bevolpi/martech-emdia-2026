@@ -1,0 +1,8 @@
+pyarrow
+streamlit
+plotly
+numpy
+optuna
+xgboost
+scikit-learn
+pandas
